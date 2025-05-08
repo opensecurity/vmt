@@ -13,11 +13,10 @@ check_host_requirements() {
       qemu-kvm
       qemu-img
       libvirt
-      virt-manager
       virt-install
-      virt-viewer
       libvirt-client
-			cloud-utils
+			genisoimage
+			dnsmasq
     )
     check_cmd="rpm -q"
   elif [[ -f /etc/debian_version ]]; then
@@ -32,7 +31,7 @@ check_host_requirements() {
       libvirt-daemon-system
       dnsmasq
       genisoimage
-			cloud-image-utils
+      cloud-image-utils
     )
     check_cmd="dpkg -s"
   else
