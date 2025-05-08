@@ -159,7 +159,15 @@ get_vm_ip() {
     return
   fi
 
-  ip=$(arp -an | grep -i "$mac" | awk '{print $2}' | tr -d '()' | head -n1)
+  if command -v ip &>/dev/null; then
+    ip=$(ip neigh | grep -i "$mac" | awk '{print $1}' | head -n1)
+  elif command -v arp &>/dev/null; then
+    ip=$(arp -an | grep -i "$mac" | awk '{print $2}' | tr -d '()' | head -n1)
+  else
+    echo "⚠️ Neither 'ip' nor 'arp' found; can't resolve IP"
+    ip="<no ip>"
+  fi
+
   echo "${ip:-<no ip>}"
 }
 

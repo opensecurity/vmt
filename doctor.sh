@@ -4,7 +4,7 @@ set -euo pipefail
 trap 'echo "⚠️  Script interrupted or failed"; exit 1' ERR INT
 
 # --- System Requirements Check for vmt ---
-echo "🔧 vmt doctor — checking host system compatibility"
+echo "🔧 vmt doctor - checking host system compatibility"
 
 check_host_requirements() {
   if [[ -f /etc/redhat-release ]]; then
@@ -17,6 +17,7 @@ check_host_requirements() {
       virt-install
       virt-viewer
       libvirt-client
+			cloud-utils
     )
     check_cmd="rpm -q"
   elif [[ -f /etc/debian_version ]]; then
@@ -31,6 +32,7 @@ check_host_requirements() {
       libvirt-daemon-system
       dnsmasq
       genisoimage
+			cloud-image-utils
     )
     check_cmd="dpkg -s"
   else
