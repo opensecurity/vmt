@@ -1,12 +1,22 @@
 #!/bin/bash
 
 set -euo pipefail
+trap 'echo "⚠️  Script interrupted or failed"; exit 1' ERR INT
+[[ "${VMT_DEBUG:-0}" == "1" ]] && set -x
+
+echo "🕒 $(date '+%Y-%m-%d %H:%M:%S') — Running: $0 $*"
+
+VERSION="vmt 1.0.0"
 
 WORKDIR="$HOME/vms"
 IMAGE_CACHE="$WORKDIR/.images"
 SSH_KEY_DIR="$WORKDIR/.ssh"
 SSH_KEY_PATH="$SSH_KEY_DIR/id_ed25519"
-mkdir -p "$WORKDIR" "$IMAGE_CACHE" "$SSH_KEY_DIR"
+LOGS_FOLDER="$WORKDIR/logs"
+mkdir -p "$WORKDIR" "$IMAGE_CACHE" "$SSH_KEY_DIR" "$LOGS_FOLDER"
+chmod 700 "$SSH_KEY_DIR"
+chmod 700 "$WORKDIR"
+chmod 700 "$IMAGE_CACHE"
 
 ACTION=${1:-}
 RAW_NAME=${2:-}
@@ -14,21 +24,36 @@ DISTRO=${3:-ubuntu}
 RAM=${4:-2048}
 CPUS=${5:-2}
 DISK_SIZE=${6:-20}
+DISK_BYTES=$((DISK_SIZE * 1024 * 1024 * 1024))
 
-if [[ -z "$ACTION" ]]; then
-  echo "Usage: $0 {bootstrap|create|apply|destroy|ssh|delete|ls} VM_NAME DISTRO [RAM_MB] [CPUs] [Disk_GB]"
-  exit 1
-fi
-
-if [[ "$ACTION" =~ ^(bootstrap|create|apply|destroy|ssh|delete)$ && -z "$RAW_NAME" ]]; then
-  echo "❌ VM_NAME is required for action: $ACTION"
-  exit 1
-fi
-
-# Sanitize name to avoid invalid bridge/pool names
 NAME=$(echo "$RAW_NAME" | tr -cd 'a-zA-Z0-9' | cut -c1-12)
+if [[ "$NAME" != "$RAW_NAME" ]]; then
+  echo "⚠️  VM name sanitized to '$NAME' from '$RAW_NAME'"
+fi
+
 VMPATH="$WORKDIR/$NAME"
 POOL_NAME="vmt_${NAME}"
+
+LOG_FILE="$LOGS_FOLDER/$NAME.log"
+if [[ "${VMT_LOG:-1}" != "0" ]]; then
+  exec > >(tee -a "$LOG_FILE") 2>&1
+fi
+
+require_commands() {
+  for cmd in terraform virsh cloud-localds ssh-keygen curl; do
+    if ! command -v "$cmd" &>/dev/null; then
+      echo "❌ Required command '$cmd' not found in PATH"
+      exit 1
+    fi
+  done
+}
+
+if [[ -z "$ACTION" ]]; then
+  echo "Usage: $0 {bootstrap|create|apply|destroy|ssh|delete|ls|start|stop} VM_NAME DISTRO [RAM_MB] [CPUs] [Disk_GB]"
+  exit 1
+fi
+
+require_commands
 
 # Define base image URLs per distro
 case "$DISTRO" in
@@ -61,7 +86,7 @@ check_vm_dir() {
 }
 
 bootstrap_pool() {
-  if [[ ! -f "$SSH_KEY_PATH" ]]; then
+  if [[ ! -f "$SSH_KEY_PATH" || ! -f "$SSH_KEY_PATH.pub" ]]; then
     echo "🔑 Generating SSH key for VM access..."
     ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N ""
     chmod 600 "$SSH_KEY_PATH"
@@ -113,7 +138,6 @@ create_pool() {
 get_vm_ip() {
   local name=$1
 
-  # Return <no ip> if VM is not running
   local state
   state=$(virsh domstate "$name" 2>/dev/null || true)
   if [[ "$state" != "running" ]]; then
@@ -121,7 +145,6 @@ get_vm_ip() {
     return
   fi
 
-  # Try guest agent first (most reliable if agent installed)
   local ip
   ip=$(virsh domifaddr "$name" --source agent 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d/ -f1 | grep -Ev '^127\.' | head -n1)
   if [[ -n "$ip" ]]; then
@@ -129,7 +152,6 @@ get_vm_ip() {
     return
   fi
 
-  # Fallback: resolve via MAC address (less reliable if old entries exist)
   local mac
   mac=$(virsh domiflist "$name" 2>/dev/null | awk '/network/ {print $5}' | head -n1)
   if [[ -z "$mac" ]]; then
@@ -137,7 +159,7 @@ get_vm_ip() {
     return
   fi
 
-  ip=$(ip neigh | grep -i "$mac" | awk '{print $1}' | grep -Ev '^127\.' | head -n1)
+  ip=$(arp -an | grep -i "$mac" | awk '{print $2}' | tr -d '()' | head -n1)
   echo "${ip:-<no ip>}"
 }
 
@@ -186,6 +208,10 @@ case "$ACTION" in
     ;;
 
   create)
+    if [[ -d "$VMPATH" ]]; then
+      echo "❌ VM '$NAME' already exists at $VMPATH. Use 'apply' 'destroy' or 'delete' first."
+      exit 1
+    fi
     bootstrap_pool
     mkdir -p "$VMPATH/qemu/images" "$VMPATH/qemu/seed" "$VMPATH/cloudinit" "$VMPATH/terraform"
     create_pool
@@ -196,6 +222,14 @@ case "$ACTION" in
       echo "⬇️  Downloading base image to $CACHED_IMAGE..."
       curl -L "$BASE_IMAGE_URL" -o "$CACHED_IMAGE"
       chmod 644 "$CACHED_IMAGE"
+
+      echo "🔍 Verifying downloaded image..."
+      if ! qemu-img info "$CACHED_IMAGE" &>/dev/null; then
+        echo "❌ Image file is invalid or corrupted: $CACHED_IMAGE"
+        rm -f "$CACHED_IMAGE"
+        exit 1
+      fi
+      echo "✅ Image verified: $CACHED_IMAGE"
       echo "✅ Cached base image at $CACHED_IMAGE"
     else
       echo "✅ Found cached base image: $CACHED_IMAGE"
@@ -228,6 +262,7 @@ resource "libvirt_volume" "base" {
 resource "libvirt_volume" "disk" {
   name           = "$NAME.qcow2"
   pool           = "$POOL_NAME"
+  size = $DISK_BYTES
   base_volume_id = libvirt_volume.base.id
 }
 
@@ -308,6 +343,20 @@ EOF
     cd "$VMPATH/terraform"
     terraform init -input=false
     terraform apply -auto-approve
+    echo "🚀 VM '$NAME' is ready."
+    echo "🔍 Waiting for IP address..."
+    for i in {1..10}; do
+      IP=$(get_vm_ip "$NAME")
+      if [[ "$IP" != "<no ip>" ]]; then
+        echo "🔑 SSH: ssh -i $SSH_KEY_PATH devops@$IP"
+        break
+      fi
+      sleep 2
+    done
+
+    if [[ "$IP" == "<no ip>" ]]; then
+      echo "⚠️  Failed to retrieve VM IP after 10 attempts"
+    fi
     ;;
 
   destroy)
@@ -321,7 +370,8 @@ EOF
       echo "❌ Cannot determine IP for $NAME"
       exit 1
     fi
-    ssh -i "$SSH_KEY_PATH" devops@"$IP"
+    shift 2
+    exec ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$SSH_KEY_DIR/known_hosts" devops@"$IP" "$@"
     ;;
 
   start)
@@ -401,6 +451,15 @@ EOF
     fi
 
     echo "✅ All resources for '$NAME' deleted"
+    ;;
+
+  version)
+    echo "$VERSION"
+    ;;
+
+  help)
+    echo "Usage:"
+    echo "  $0 {bootstrap|create|apply|destroy|ssh|delete|ls|start|stop|version|help} VM_NAME DISTRO [RAM_MB] [CPUs] [Disk_GB]"
     ;;
 
 
