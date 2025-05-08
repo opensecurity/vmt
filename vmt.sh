@@ -4,7 +4,7 @@ set -euo pipefail
 trap 'echo "⚠️  Script interrupted or failed"; exit 1' ERR INT
 [[ "${VMT_DEBUG:-0}" == "1" ]] && set -x
 
-echo "🕒 $(date '+%Y-%m-%d %H:%M:%S') — Running: $0 $*"
+echo "🕒 $(date '+%Y-%m-%d %H:%M:%S') - Running: $0 $*"
 
 VERSION="vmt 1.0.0"
 
@@ -12,7 +12,7 @@ WORKDIR="$HOME/vms"
 IMAGE_CACHE="$WORKDIR/.images"
 SSH_KEY_DIR="$WORKDIR/.ssh"
 SSH_KEY_PATH="$SSH_KEY_DIR/id_ed25519"
-LOGS_FOLDER="$WORKDIR/logs"
+LOGS_FOLDER="$WORKDIR/.logs"
 mkdir -p "$WORKDIR" "$IMAGE_CACHE" "$SSH_KEY_DIR" "$LOGS_FOLDER"
 chmod 700 "$SSH_KEY_DIR"
 chmod 700 "$WORKDIR"
