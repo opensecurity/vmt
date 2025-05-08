@@ -17,6 +17,7 @@ check_host_requirements() {
       libvirt-client
 			genisoimage
 			dnsmasq
+			cloud-utils
     )
     check_cmd="rpm -q"
   elif [[ -f /etc/debian_version ]]; then
