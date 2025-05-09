@@ -257,7 +257,7 @@ terraform {
 }
 
 provider "libvirt" {
-  uri = "qemu:///system"
+  uri = "qemu:///session"
 }
 
 resource "libvirt_volume" "base" {
